@@ -25,7 +25,7 @@ Status: em andamento
 - [x] Tratar erros de conexão e respostas vazias
 - [x] Configurar variáveis de ambiente
 - [x] Validar o limite de contexto do Ollama
-- [ ] Validar a conversa natural com o modelo real
+- [x] Validar a conversa natural com o modelo real
 - [ ] Testar indisponibilidade do Ollama em execução real
 
 ## Etapa 3 — Memória persistente
