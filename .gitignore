@@ -1,0 +1,46 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Configuracoes e segredos
+.env
+.env.*
+!.env.example
+
+# Banco e dados locais
+data/*
+!data/.gitkeep
+
+# Frontend
+node_modules/
+dist/
+build/
+
+# Tauri
+src-tauri/target/
+
+# VS Code e sistema
+.DS_Store
+Thumbs.db
+
+gitignore
+# Logs e arquivos temporarios
+*.log
+*.tmp
+*.temp
+
+# Ambientes virtuais adicionais
+.python-version
+
+# Artefatos de compilacao Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Configuracoes locais do VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
