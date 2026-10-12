@@ -2,3 +2,4 @@
 uvicorn[standard]
 httpx
 pydantic
+tzdata

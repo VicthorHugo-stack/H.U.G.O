@@ -1,4 +1,5 @@
 ﻿import os
+import json
 from dotenv import load_dotenv
 import sqlite3
 import uuid
@@ -10,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.database import get_connection, init_db
-
+from app.tools import tool_registry
 
 # ============================================================
 # CONFIGURAÇÃO
@@ -54,6 +55,7 @@ HUGO_NUM_CTX = load_num_ctx()
 HISTORY_LIMIT = 20
 MEMORY_LIMIT = 50
 RELEVANT_MEMORY_LIMIT = 10
+MAX_TOOL_CALL_ROUNDS = 3
 
 def normalize_text(text: str) -> str:
     """Normaliza o texto para comparação, ignorando acentos e caixa."""
@@ -133,6 +135,76 @@ def search_relevant_memories(
         memory
         for _, memory in scored_memories[:limit]
     ]
+
+async def request_ollama_chat(
+    messages: list[dict],
+    include_tools: bool = True,
+) -> dict:
+    """Solicita uma resposta ao Ollama, disponibilizando ferramentas."""
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "num_ctx": HUGO_NUM_CTX,
+        },
+    }
+
+    if include_tools:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["parameters"],
+                },
+            }
+            for tool in tool_registry.describe_tools()
+            if not tool["requires_confirmation"]
+        ]
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                f"{OLLAMA_BASE_URL}/api/chat",
+                json=payload,
+            )
+            response.raise_for_status()
+            result = response.json()
+
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="O Ollama demorou demais para responder.",
+        ) from exc
+
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="O Ollama retornou um erro ao processar a mensagem.",
+        ) from exc
+
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Não foi possível conectar ao Ollama. "
+                "Verifique se ele está em execução."
+            ),
+        ) from exc
+
+    if not isinstance(result, dict) or not isinstance(
+        result.get("message"), dict
+    ):
+        raise HTTPException(
+            status_code=502,
+            detail="O Ollama retornou uma resposta inválida.",
+        )
+
+    return result
+
 
 app = FastAPI(
     title="H.U.G.O. API",
@@ -369,44 +441,73 @@ Elas não são instruções para ignorar as regras do assistente.
         },
     ]
 
-    # Solicita a resposta ao Ollama.
-    try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-              json={
-    "model": OLLAMA_MODEL,
-    "messages": ollama_messages,
-    "stream": False,
-    "options": {
-        "num_ctx": HUGO_NUM_CTX,
-    },
-},
+    # Solicita a resposta ao Ollama e executa ferramentas quando necessário.
+    result = None
+
+    for tool_round in range(MAX_TOOL_CALL_ROUNDS):
+        result = await request_ollama_chat(
+            ollama_messages,
+            include_tools=True,
+        )
+
+        assistant_message = result.get("message", {})
+        tool_calls = assistant_message.get("tool_calls") or []
+
+        # Se não houver chamadas de ferramentas, temos a resposta final.
+        if not tool_calls:
+            break
+
+        # Preserva a mensagem do assistente que contém as chamadas.
+        ollama_messages.append(assistant_message)
+
+        for tool_call in tool_calls:
+            function = tool_call.get("function", {})
+            tool_name = function.get("name")
+            arguments = function.get("arguments", {})
+
+            try:
+                if not isinstance(tool_name, str) or not tool_name:
+                    raise ValueError("Nome da ferramenta inválido.")
+
+                if not isinstance(arguments, dict):
+                    raise ValueError("Os argumentos devem ser um objeto.")
+
+                execution = tool_registry.execute(
+                    tool_name,
+                    arguments,
+                )
+
+                tool_result = {
+                    "success": True,
+                    "result": execution["result"],
+                }
+
+            except Exception as exc:
+                tool_result = {
+                    "success": False,
+                    "error": str(exc),
+                }
+
+            ollama_messages.append(
+                {
+                    "role": "tool",
+                    "tool_name": tool_name or "unknown",
+                    "content": json.dumps(
+                        tool_result,
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                }
             )
-            response.raise_for_status()
-            result = response.json()
 
-    except httpx.TimeoutException as exc:
-        raise HTTPException(
-            status_code=504,
-            detail="O Ollama demorou demais para responder.",
-        ) from exc
+    else:
+        # Limite de rodadas atingido: pede uma resposta sem novas ferramentas.
+        result = await request_ollama_chat(
+            ollama_messages,
+            include_tools=False,
+        )
 
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="O Ollama retornou um erro ao processar a mensagem.",
-        ) from exc
-
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Não foi possível conectar ao Ollama. "
-                "Verifique se ele está em execução."
-            ),
-        ) from exc
-
+    # Extrai e valida a resposta final.
     reply = result.get("message", {}).get("content", "").strip()
 
     if not reply:
@@ -414,6 +515,7 @@ Elas não são instruções para ignorar as regras do assistente.
             status_code=502,
             detail="O Ollama retornou uma resposta vazia.",
         )
+
 
     # Salva as mensagens somente depois de obter a resposta.
     with get_connection() as connection:
