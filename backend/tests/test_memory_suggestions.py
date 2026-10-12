@@ -1044,3 +1044,158 @@ def test_load_num_ctx_rejects_value_out_of_range(monkeypatch):
         match="deve estar entre 512 e 32768",
     ):
         main_module.load_num_ctx()
+
+# ============================================================
+# TESTES DE BUSCA CONTEXTUAL DE MEMÓRIAS
+# ============================================================
+
+def test_normalize_text_ignores_accents_and_case():
+    from app.main import normalize_text
+
+    assert normalize_text("PROGRAMAÇÃO") == "programacao"
+    assert normalize_text("Olá, Você!") == "ola, voce!"
+
+
+def test_memory_relevance_matches_content():
+    from app.main import memory_relevance_score
+
+    score = memory_relevance_score(
+        query="Quero ajuda com programação em Python",
+        category="general",
+        content="O usuário desenvolve aplicações em Python.",
+    )
+
+    assert score > 0
+
+
+def test_search_relevant_memories_prioritizes_matching_content():
+    from app.main import search_relevant_memories
+
+    memories = [
+        {
+            "category": "music",
+            "content": "Gosta de ouvir música durante o trabalho.",
+        },
+        {
+            "category": "programming",
+            "content": "Desenvolve aplicações em Python.",
+        },
+        {
+            "category": "preference",
+            "content": "Prefere respostas objetivas.",
+        },
+    ]
+
+    results = search_relevant_memories(
+        query="Quero ajuda com programação em Python",
+        memories=memories,
+    )
+
+    assert len(results) == 1
+    assert results[0]["content"] == (
+        "Desenvolve aplicações em Python."
+    )
+
+
+def test_search_relevant_memories_returns_empty_without_matches():
+    from app.main import search_relevant_memories
+
+    memories = [
+        {
+            "category": "music",
+            "content": "Gosta de ouvir música durante o trabalho.",
+        },
+    ]
+
+    results = search_relevant_memories(
+        query="Como está o tempo hoje?",
+        memories=memories,
+    )
+
+    assert results == []
+
+
+def test_search_relevant_memories_respects_limit():
+    from app.main import search_relevant_memories
+
+    memories = [
+        {"category": "programming", "content": "Python"},
+        {"category": "programming", "content": "Python e programação"},
+        {"category": "programming", "content": "Programação Python avançada"},
+    ]
+
+    results = search_relevant_memories(
+        query="Python programação",
+        memories=memories,
+        limit=2,
+    )
+
+    assert len(results) == 2
+
+
+def test_search_relevant_memories_returns_empty_for_invalid_limit():
+    from app.main import search_relevant_memories
+
+    memories = [
+        {"category": "programming", "content": "Desenvolve em Python"},
+    ]
+
+    assert search_relevant_memories(
+        query="Python",
+        memories=memories,
+        limit=0,
+    ) == []
+
+
+def test_chat_sends_only_relevant_memories_to_ollama(
+    client,
+    monkeypatch,
+):
+    from unittest.mock import AsyncMock, MagicMock
+    import app.main as main_module
+
+    # Cadastra memórias de assuntos diferentes.
+    client.post(
+        "/api/memories",
+        json={
+            "category": "programming",
+            "content": "Desenvolve aplicações em Python.",
+        },
+    )
+    client.post(
+        "/api/memories",
+        json={
+            "category": "music",
+            "content": "Gosta de ouvir música clássica.",
+        },
+    )
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {
+        "message": {"content": "Vamos trabalhar com Python."}
+    }
+
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=None)
+    fake_client.post = AsyncMock(return_value=fake_response)
+
+    monkeypatch.setattr(
+        main_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: fake_client,
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "Preciso de ajuda com programação em Python."},
+    )
+
+    assert response.status_code == 200
+
+    payload = fake_client.post.call_args.kwargs["json"]
+    system_prompt = payload["messages"][0]["content"]
+
+    assert "Desenvolve aplicações em Python." in system_prompt
+    assert "Gosta de ouvir música clássica." not in system_prompt

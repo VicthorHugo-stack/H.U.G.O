@@ -2,6 +2,8 @@
 from dotenv import load_dotenv
 import sqlite3
 import uuid
+import re
+import unicodedata
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -51,6 +53,86 @@ HUGO_NUM_CTX = load_num_ctx()
 
 HISTORY_LIMIT = 20
 MEMORY_LIMIT = 50
+RELEVANT_MEMORY_LIMIT = 10
+
+def normalize_text(text: str) -> str:
+    """Normaliza o texto para comparação, ignorando acentos e caixa."""
+    normalized = unicodedata.normalize("NFKD", text.casefold())
+    without_accents = "".join(
+        char for char in normalized
+        if not unicodedata.combining(char)
+    )
+    return without_accents
+
+
+def memory_relevance_score(
+    query: str,
+    category: str,
+    content: str,
+) -> int:
+    """Calcula a relevância de uma memória para a mensagem atual."""
+    normalized_query = normalize_text(query)
+    normalized_category = normalize_text(category)
+    normalized_content = normalize_text(content)
+
+    query_words = set(re.findall(r"\w+", normalized_query))
+    memory_words = set(
+        re.findall(r"\w+", f"{normalized_category} {normalized_content}")
+    )
+
+    # Ignora palavras muito comuns, que pouco ajudam na busca.
+    stop_words = {
+        "a", "as", "o", "os", "um", "uma", "uns", "umas",
+        "de", "da", "do", "das", "dos", "em", "no", "na",
+        "nos", "nas", "por", "para", "com", "sem", "e",
+        "ou", "que", "qual", "quais", "como", "quando",
+        "onde", "me", "minha", "meu", "minhas", "meus",
+        "eu", "voce", "voces", "sobre", "ser", "ter",
+    }
+
+    query_words -= stop_words
+
+    if not query_words:
+        return 0
+
+    matches = query_words & memory_words
+
+    # O conteúdo tem peso maior que a categoria.
+    content_words = set(re.findall(r"\w+", normalized_content))
+    content_matches = query_words & content_words
+    category_matches = matches - content_matches
+
+    return (len(content_matches) * 2) + len(category_matches)
+
+
+def search_relevant_memories(
+    query: str,
+    memories: list[dict],
+    limit: int = RELEVANT_MEMORY_LIMIT,
+) -> list[dict]:
+    """Retorna somente memórias com correspondência relevante."""
+    if limit <= 0 or not query.strip():
+        return []
+
+    scored_memories = []
+
+    for memory in memories:
+        score = memory_relevance_score(
+            query=query,
+            category=memory["category"],
+            content=memory["content"],
+        )
+
+        if score > 0:
+            scored_memories.append((score, memory))
+
+    # Prioriza a pontuação e preserva a ordem original em empates.
+    scored_memories.sort(key=lambda item: item[0], reverse=True)
+
+    return [
+        memory
+        for _, memory in scored_memories[:limit]
+    ]
 
 app = FastAPI(
     title="H.U.G.O. API",
@@ -238,7 +320,7 @@ async def chat(request: ChatRequest):
         for row in reversed(history_rows)
     ]
 
-    memories = [
+    available_memories = [
         {
             "category": row["category"],
             "content": row["content"],
@@ -246,14 +328,18 @@ async def chat(request: ChatRequest):
         for row in memory_rows
     ]
 
+    memories = search_relevant_memories(
+        query=user_message,
+        memories=available_memories,
+        limit=RELEVANT_MEMORY_LIMIT,
+    )
     memory_text = "\n".join(
         f"- [{memory['category']}] {memory['content']}"
         for memory in memories
     )
 
     if not memory_text:
-        memory_text = "Nenhuma memória pessoal cadastrada."
-
+        memory_text = "Nenhuma memória pessoal relevante para esta mensagem."
     system_prompt = f"""
 Você é H.U.G.O., um assistente pessoal inteligente.
 

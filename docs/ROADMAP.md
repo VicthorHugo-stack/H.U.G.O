@@ -3,7 +3,8 @@
 ## Estado atual
 
 Fase: 1 a 3 — Preparação, núcleo de inteligência e memória persistente
-Status: em andamento
+Status: etapas 1 a 3 concluídas; próxima etapa: ferramentas.
+
 ## Etapa 1 — Ambiente e organização
 
 - [x] Inicializar repositório Git
@@ -26,15 +27,17 @@ Status: em andamento
 - [x] Configurar variáveis de ambiente
 - [x] Validar o limite de contexto do Ollama
 - [x] Validar a conversa natural com o modelo real
-- [ ] Testar indisponibilidade do Ollama em execução real
+- [x] Testar indisponibilidade do Ollama em execução real
 
 ## Etapa 3 — Memória persistente
+
 - [x] Criar banco SQLite
 - [x] Persistir conversas e mensagens
 - [x] Implementar operações de memórias de longo prazo
 - [x] Implementar sugestões de memória com aprovação ou rejeição
-- [ ] Implementar e validar busca contextual
-- [ ] Testar persistência entre reinicializações
+- [x] Implementar e validar busca contextual
+- [x] Testar persistência entre reinicializações
+
 ## Etapa 4 — Ferramentas
 
 - [ ] Criar registro de ferramentas
@@ -103,7 +106,9 @@ Status: em andamento
 - [x] Validar os fluxos de conversas, memórias e sugestões
 - [x] Validar o envio do parâmetro de contexto ao Ollama
 - [x] Validar configurações inválidas do limite de contexto
-- [x] Obter 31 testes aprovados
+- [x] Validar busca contextual de memórias
+- [x] Validar seleção de memórias relevantes no chat
+- [x] Obter 38 testes aprovados
 
 ## Regra de conclusão
 
